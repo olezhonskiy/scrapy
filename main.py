@@ -11,6 +11,7 @@ class TelegramForwarder:
         self.api_hash = api_hash
         self.phone_number = phone_number
         self.client = None
+        self.replacement_dict = {}
 
     async def connect(self):
         if self.client:
@@ -48,7 +49,17 @@ class TelegramForwarder:
 
         print("List of groups printed successfully!")
         return chats
-    
+
+    def replace_text(self, text):
+        if text is None:
+            return None
+        
+        for old_word, new_word in self.replacement_dict.items():
+            pattern = re.compile(re.escape(old_word), re.IGNORECASE)
+            text = pattern.sub(new_word, text)
+        
+        return text
+
     async def forward_messages_to_channel(self, source_chat_id, destination_channel_id, keywords):
         await self.connect()
         
@@ -66,14 +77,24 @@ class TelegramForwarder:
             messages = await self.client.get_messages(source_chat_id, min_id=last_message_id, limit=None)
 
             for message in reversed(messages):
-                if keywords:
-                    if message.text and any(keyword in message.text.lower() for keyword in keywords):
+                if message.text:
+                    if keywords and any(keyword.lower() in message.text.lower() for keyword in keywords):
                         print(f"Message contains a keyword: {message.text}")
-                        await self.client.send_message(destination_channel_id, message.text)
-                        print("Message forwarded")
+                        replaced_text = self.replace_text(message.text)
+                        if replaced_text:
+                            await self.client.send_message(destination_channel_id, replaced_text)
+                            print("Message forwarded")
+                        else:
+                            print("Message not forwarded: Text was empty after replacement")
+                    elif not keywords:
+                        replaced_text = self.replace_text(message.text)
+                        if replaced_text:
+                            await self.client.send_message(destination_channel_id, replaced_text)
+                            print("Message forwarded")
+                        else:
+                            print("Message not forwarded: Text was empty after replacement")
                 else:
-                    await self.client.send_message(destination_channel_id, message.text)
-                    print("Message forwarded")
+                    print("Message not forwarded: No text content")
 
                 last_message_id = max(last_message_id, message.id)
 
@@ -112,6 +133,41 @@ class TelegramForwarder:
                 }
         except FileNotFoundError:
             return {}
+
+    def add_replacement_word(self):
+        old_word = input("Enter the word to be replaced: ")
+        new_word = input("Enter the replacement word: ")
+        self.replacement_dict[old_word.lower()] = new_word
+        self.save_replacement_dict()
+        print(f"Replacement added: '{old_word}' -> '{new_word}'")
+
+    def remove_replacement_word(self):
+        old_word = input("Enter the word to remove from replacements: ")
+        if old_word.lower() in self.replacement_dict:
+            del self.replacement_dict[old_word.lower()]
+            self.save_replacement_dict()
+            print(f"Replacement for '{old_word}' removed.")
+        else:
+            print(f"'{old_word}' not found in replacements.")
+
+    def list_replacement_words(self):
+        if not self.replacement_dict:
+            print("No replacement words set.")
+        else:
+            print("Current replacement words:")
+            for old_word, new_word in self.replacement_dict.items():
+                print(f"'{old_word}' -> '{new_word}'")
+
+    def save_replacement_dict(self):
+        with open("replacement_words.json", "w") as f:
+            json.dump(self.replacement_dict, f)
+
+    def load_replacement_dict(self):
+        try:
+            with open("replacement_words.json", "r") as f:
+                self.replacement_dict = json.load(f)
+        except FileNotFoundError:
+            self.replacement_dict = {}
 
 def read_credentials():
     try:
@@ -160,6 +216,48 @@ async def change_api():
         else:
             print("Let's try again.\n")
 
+async def settings_menu(forwarder):
+    while True:
+        print("\nSettings Menu:")
+        print("1. Change API")
+        print("2. Manage Text Replacements")
+        print("3. Return to Main Menu")
+
+        choice = input("Enter your choice: ")
+
+        if choice == "1":
+            api_id, api_hash, phone_number = await change_api()
+            forwarder.__init__(api_id, api_hash, phone_number)
+            await forwarder.connect()
+            print("API credentials updated successfully.")
+        elif choice == "2":
+            await manage_replacements(forwarder)
+        elif choice == "3":
+            break
+        else:
+            print("Invalid choice")
+
+async def manage_replacements(forwarder):
+    while True:
+        print("\nManage Text Replacements:")
+        print("1. Add Replacement")
+        print("2. Remove Replacement")
+        print("3. List Replacements")
+        print("4. Return to Settings Menu")
+
+        choice = input("Enter your choice: ")
+
+        if choice == "1":
+            forwarder.add_replacement_word()
+        elif choice == "2":
+            forwarder.remove_replacement_word()
+        elif choice == "3":
+            forwarder.list_replacement_words()
+        elif choice == "4":
+            break
+        else:
+            print("Invalid choice")
+
 async def main():
     api_id, api_hash, phone_number = read_credentials()
 
@@ -167,13 +265,14 @@ async def main():
         api_id, api_hash, phone_number = await change_api()
 
     forwarder = TelegramForwarder(api_id, api_hash, phone_number)
+    forwarder.load_replacement_dict()
 
     while True:
-        print("\nChoose an option:")
+        print("\nMain Menu:")
         print("1. List Chats")
         print("2. Forward Messages")
         print("3. Forward Last Messages")
-        print("4. Change API")
+        print("4. Settings")
         print("5. Exit")
 
         choice = input("Enter your choice: ")
@@ -193,10 +292,7 @@ async def main():
             elif choice == "3":
                 await forwarder.forward_last_messages()
             elif choice == "4":
-                api_id, api_hash, phone_number = await change_api()
-                forwarder = TelegramForwarder(api_id, api_hash, phone_number)
-                await forwarder.connect()  # Додано підключення після зміни API
-                print("API credentials updated successfully.")
+                await settings_menu(forwarder)
             elif choice == "5":
                 print("Exiting the program.")
                 break
